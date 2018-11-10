@@ -13,6 +13,7 @@ import ImageUploadCommand from '../../src/imageupload/imageuploadcommand';
 import Notification from '@ckeditor/ckeditor5-ui/src/notification/notification';
 import ModelSelection from '@ckeditor/ckeditor5-engine/src/model/selection';
 import { isImageType } from '../../src/imageupload/utils';
+import ModelElement from '@ckeditor/ckeditor5-engine/src/model/element';
 
 /**
  * The editing part of the image upload feature.
@@ -24,7 +25,7 @@ export default class ImageUploadEditing extends Plugin {
 	 * @inheritDoc
 	 */
 	static get requires() {
-		return [ FileRepository, Notification ];
+		return [FileRepository, Notification];
 	}
 
 	/**
@@ -34,86 +35,100 @@ export default class ImageUploadEditing extends Plugin {
 		const editor = this.editor;
 		const doc = editor.model.document;
 		const schema = editor.model.schema;
-		const fileRepository = editor.plugins.get( FileRepository );
+		const fileRepository = editor.plugins.get(FileRepository);
 
 		// Setup schema to allow uploadId and uploadStatus for images.
-		schema.extend( 'image', {
-			allowAttributes: [ 'uploadId', 'uploadStatus' ]
-		} );
+		schema.extend('image', {
+			allowAttributes: ['uploadId', 'uploadStatus']
+		});
 
 		// Register imageUpload command.
-		editor.commands.add( 'imageUpload', new ImageUploadCommand( editor ) );
+		editor.commands.add('imageUpload', new ImageUploadCommand(editor));
 
 		// Handle pasted images.
 		// For every image file, a new file loader is created and a placeholder image is
 		// inserted into the content. Then, those images are uploaded once they appear in the model
 		// (see Document#change listener below).
-		this.listenTo( editor.editing.view.document, 'clipboardInput', ( evt, data ) => {
+		this.listenTo(editor.editing.view.document, 'clipboardInput', (evt, data) => {
 			// Skip if non empty HTML data is included.
 			// https://github.com/ckeditor/ckeditor5-upload/issues/68
-			if ( isHtmlIncluded( data.dataTransfer ) ) {
+			if (isHtmlIncluded(data.dataTransfer)) {
 				return;
 			}
 
-			const images = Array.from( data.dataTransfer.files ).filter( isImageType );
+			const images = Array.from(data.dataTransfer.files).filter(isImageType);
 
 			const targetModelSelection = new ModelSelection(
-				data.targetRanges.map( viewRange => editor.editing.mapper.toModelRange( viewRange ) )
+				data.targetRanges.map(viewRange => editor.editing.mapper.toModelRange(viewRange))
 			);
 
-			editor.model.change( writer => {
+			editor.model.change(writer => {
 				// Set selection to paste target.
-				writer.setSelection( targetModelSelection );
+				writer.setSelection(targetModelSelection);
 
-				if ( images.length ) {
+				if (images.length) {
 					evt.stop();
 
-					// Upload images after the selection has changed in order to ensure the command's state is refreshed.
-					editor.model.enqueueChange( 'default', () => {
-						editor.execute( 'imageUpload', { files: images } );
-					} );
+					for (const image of Array.from(images)) {
+						var reader = new FileReader();
+						reader.addEventListener("load", function () {
+							editor.model.enqueueChange(() => {
+								const imageElement = new ModelElement('image', {
+									src: reader.result
+								});
+								editor.model.insertContent(imageElement, editor.model.document.selection);
+							});
+
+						}, false);
+						reader.readAsDataURL(image);
+
+					}
+					// // Upload images after the selection has changed in order to ensure the command's state is refreshed.
+					// editor.model.enqueueChange( 'default', () => {
+					// 	editor.execute( 'imageUpload', { files: images } );
+					// } );
 				}
-			} );
-		} );
+			});
+		});
 
 		// Prevents from the browser redirecting to the dropped image.
-		editor.editing.view.document.on( 'dragover', ( evt, data ) => {
+		editor.editing.view.document.on('dragover', (evt, data) => {
 			data.preventDefault();
-		} );
+		});
 
 		// Upload placeholder images that appeared in the model.
-		doc.on( 'change', () => {
-			const changes = doc.differ.getChanges( { includeChangesInGraveyard: true } );
+		doc.on('change', () => {
+			const changes = doc.differ.getChanges({ includeChangesInGraveyard: true });
 
-			for ( const entry of changes ) {
-				if ( entry.type == 'insert' && entry.name == 'image' ) {
+			for (const entry of changes) {
+				if (entry.type == 'insert' && entry.name == 'image') {
 					const item = entry.position.nodeAfter;
 					const isInGraveyard = entry.position.root.rootName == '$graveyard';
 
 					// Check if the image element still has upload id.
-					const uploadId = item.getAttribute( 'uploadId' );
+					const uploadId = item.getAttribute('uploadId');
 
-					if ( !uploadId ) {
+					if (!uploadId) {
 						continue;
 					}
 
 					// Check if the image is loaded on this client.
-					const loader = fileRepository.loaders.get( uploadId );
+					const loader = fileRepository.loaders.get(uploadId);
 
-					if ( !loader ) {
+					if (!loader) {
 						continue;
 					}
 
-					if ( isInGraveyard ) {
+					if (isInGraveyard) {
 						// If the image was inserted to the graveyard - abort the loading process.
 						loader.abort();
-					} else if ( loader.status == 'idle' ) {
+					} else if (loader.status == 'idle') {
 						// If the image was inserted into content and has not been loaded yet, start loading it.
-						this._readAndUpload( loader, item );
+						this._readAndUpload(loader, item);
 					}
 				}
 			}
-		} );
+		});
 	}
 
 	/**
@@ -128,97 +143,97 @@ export default class ImageUploadEditing extends Plugin {
 	 * @param {module:engine/model/element~Element} imageElement
 	 * @returns {Promise}
 	 */
-	_readAndUpload( loader, imageElement ) {
+	_readAndUpload(loader, imageElement) {
 		const editor = this.editor;
 		const model = editor.model;
 		const t = editor.locale.t;
-		const fileRepository = editor.plugins.get( FileRepository );
-		const notification = editor.plugins.get( Notification );
+		const fileRepository = editor.plugins.get(FileRepository);
+		const notification = editor.plugins.get(Notification);
 
-		model.enqueueChange( 'transparent', writer => {
-			writer.setAttribute( 'uploadStatus', 'reading', imageElement );
-		} );
+		model.enqueueChange('transparent', writer => {
+			writer.setAttribute('uploadStatus', 'reading', imageElement);
+		});
 
 		return loader.read()
-			.then( data => {
-				const viewFigure = editor.editing.mapper.toViewElement( imageElement );
-				const viewImg = viewFigure.getChild( 0 );
+			.then(data => {
+				const viewFigure = editor.editing.mapper.toViewElement(imageElement);
+				const viewImg = viewFigure.getChild(0);
 				const promise = loader.upload();
 
-				editor.editing.view.change( writer => {
-					writer.setAttribute( 'src', data, viewImg );
-				} );
+				editor.editing.view.change(writer => {
+					writer.setAttribute('src', data, viewImg);
+				});
 
-				model.enqueueChange( 'transparent', writer => {
-					writer.setAttribute( 'uploadStatus', 'uploading', imageElement );
-				} );
+				model.enqueueChange('transparent', writer => {
+					writer.setAttribute('uploadStatus', 'uploading', imageElement);
+				});
 
 				return promise;
-			} )
-			.then( data => {
-				model.enqueueChange( 'transparent', writer => {
-					writer.setAttributes( { uploadStatus: 'complete', src: data.default }, imageElement );
+			})
+			.then(data => {
+				model.enqueueChange('transparent', writer => {
+					writer.setAttributes({ uploadStatus: 'complete', src: data.default }, imageElement);
 
 					// Srcset attribute for responsive images support.
 					let maxWidth = 0;
-					const srcsetAttribute = Object.keys( data )
+					const srcsetAttribute = Object.keys(data)
 						// Filter out keys that are not integers.
-						.filter( key => {
-							const width = parseInt( key, 10 );
+						.filter(key => {
+							const width = parseInt(key, 10);
 
-							if ( !isNaN( width ) ) {
-								maxWidth = Math.max( maxWidth, width );
+							if (!isNaN(width)) {
+								maxWidth = Math.max(maxWidth, width);
 
 								return true;
 							}
-						} )
+						})
 
 						// Convert each key to srcset entry.
-						.map( key => `${ data[ key ] } ${ key }w` )
+						.map(key => `${data[key]} ${key}w`)
 
 						// Join all entries.
-						.join( ', ' );
+						.join(', ');
 
-					if ( srcsetAttribute != '' ) {
-						writer.setAttribute( 'srcset', {
+					if (srcsetAttribute != '') {
+						writer.setAttribute('srcset', {
 							data: srcsetAttribute,
 							width: maxWidth
-						}, imageElement );
+						}, imageElement);
 					}
-				} );
+				});
 
 				clean();
-			} )
-			.catch( error => {
+			})
+			.catch(error => {
 				// If status is not 'error' nor 'aborted' - throw error because it means that something else went wrong,
 				// it might be generic error and it would be real pain to find what is going on.
-				if ( loader.status !== 'error' && loader.status !== 'aborted' ) {
+				if (loader.status !== 'error' && loader.status !== 'aborted') {
 					throw error;
 				}
 
 				// Might be 'aborted'.
-				if ( loader.status == 'error' ) {
-					notification.showWarning( error, {
-						title: t( 'Upload failed' ),
+				if (loader.status == 'error') {
+					notification.showWarning(error, {
+						title: t('Upload failed'),
 						namespace: 'upload'
-					} );
+					});
 				}
 
 				clean();
 
 				// Permanently remove image from insertion batch.
-				model.enqueueChange( 'transparent', writer => {
-					writer.remove( imageElement );
-				} );
-			} );
+				model.enqueueChange('transparent', writer => {
+					writer.remove(imageElement);
+				});
+			});
 
 		function clean() {
-			model.enqueueChange( 'transparent', writer => {
-				writer.removeAttribute( 'uploadId', imageElement );
-				writer.removeAttribute( 'uploadStatus', imageElement );
-			} );
+			model.enqueueChange('transparent', writer => {
+				writer.removeAttribute('uploadId', imageElement);
+				writer.removeAttribute('uploadStatus', imageElement);
+			});
 
-			fileRepository.destroyLoader( loader );
+			fileRepository.destroyLoader(loader);
 		}
 	}
 }
@@ -227,6 +242,6 @@ export default class ImageUploadEditing extends Plugin {
 //
 // @param {module:clipboard/datatransfer~DataTransfer} dataTransfer
 // @returns {Boolean}
-export function isHtmlIncluded( dataTransfer ) {
-	return Array.from( dataTransfer.types ).includes( 'text/html' ) && dataTransfer.getData( 'text/html' ) !== '';
+export function isHtmlIncluded(dataTransfer) {
+	return Array.from(dataTransfer.types).includes('text/html') && dataTransfer.getData('text/html') !== '';
 }
